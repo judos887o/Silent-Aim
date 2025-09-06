@@ -1,0 +1,177 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local camera = workspace.CurrentCamera
+local localPlayer = Players.LocalPlayer
+local mouse = localPlayer:GetMouse()
+
+local gui = Instance.new("ScreenGui")
+gui.ResetOnSpawn = false
+gui.Parent = localPlayer:WaitForChild("PlayerGui")
+
+task.spawn(function()
+	local introText = "Silent Aim v2.0 | By Schmeckt (PAID PC VERSION)..."
+
+	local introLabel = Instance.new("TextLabel", gui)
+	introLabel.Size = UDim2.new(0, 500, 0, 50)
+	introLabel.Position = UDim2.new(0.5, -250, 1, 0)
+	introLabel.BackgroundTransparency = 1
+	introLabel.Font = Enum.Font.GothamBold
+	introLabel.TextSize = 24
+	introLabel.TextColor3 = Color3.new(1, 1, 1)
+	introLabel.Text = ""
+
+	local stroke = Instance.new("UIStroke", introLabel)
+	stroke.Color = Color3.new(0, 0, 0)
+	stroke.Thickness = 1.5
+
+	local introSound = Instance.new("Sound", introLabel)
+	introSound.SoundId = "rbxassetid://5106954314"
+	introSound.Volume = 0.5
+
+	local tweenInfoIn = TweenInfo.new(0.7, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+	local goalIn = { Position = UDim2.new(0.5, -250, 0.4, 0) }
+	local tweenIn = TweenService:Create(introLabel, tweenInfoIn, goalIn)
+
+	tweenIn:Play()
+	introSound:Play()
+	tweenIn.Completed:Wait()
+
+	for i = 1, #introText do
+		introLabel.Text = string.sub(introText, 1, i)
+		task.wait(0.05)
+	end
+
+	task.wait(3)
+
+	local tweenInfoOut = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	local goalOut = { Position = UDim2.new(0.5, -250, -0.2, 0) }
+	local tweenOut = TweenService:Create(introLabel, tweenInfoOut, goalOut)
+
+	tweenOut:Play()
+	tweenOut.Completed:Wait()
+	introLabel:Destroy()
+end)
+
+local fovRadius = 1200
+local maxPrediction = 0.2
+local isAiming = false
+local targetCharacter = nil
+local AIM_PART = "Head"
+
+local mainGui = Instance.new("ScreenGui", localPlayer:WaitForChild("PlayerGui"))
+mainGui.ResetOnSpawn = false
+
+local statusLabel = Instance.new("TextLabel", mainGui)
+statusLabel.Size = UDim2.new(0, 180, 0, 40)
+statusLabel.Position = UDim2.new(0.02, 0, 0.5, -20)
+statusLabel.BackgroundColor3 = Color3.new(0, 0, 0)
+statusLabel.BackgroundTransparency = 0.3
+statusLabel.Font = Enum.Font.GothamBold
+statusLabel.TextSize = 18
+statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
+statusLabel.Text = "Lock: OFF"
+Instance.new("UICorner", statusLabel).CornerRadius = UDim.new(0, 8)
+
+local highlight = Instance.new("Highlight")
+highlight.Name = "SilentHighlight"
+highlight.FillTransparency = 1
+highlight.OutlineColor = Color3.new(1, 1, 1)
+highlight.OutlineTransparency = 0
+highlight.Enabled = false
+highlight.Parent = game:GetService("CoreGui")
+
+local function getClosestTarget()
+	local closest = nil
+	local shortestDist = fovRadius
+
+	for _, plr in pairs(Players:GetPlayers()) do
+		if plr ~= localPlayer and plr.Character and plr.Character:FindFirstChild("Humanoid") and plr.Character.Humanoid.Health > 0 then
+			local head = plr.Character:FindFirstChild("Head")
+			if head then
+				local screenPos, onScreen = camera:WorldToViewportPoint(head.Position)
+				if onScreen then
+					local dist = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)).Magnitude
+					if dist < shortestDist then
+						shortestDist = dist
+						closest = plr.Character
+					end
+				end
+			end
+		end
+	end
+
+	return closest
+end
+
+local function getPredictedPosition(char)
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	local part = char:FindFirstChild(AIM_PART)
+	if not hrp or not part then return nil end
+
+	local velocity = hrp.Velocity
+	local distance = (camera.CFrame.Position - part.Position).Magnitude
+	local time = distance / 550
+	local predicted = part.Position + velocity * math.clamp(time, 0, maxPrediction)
+	return predicted
+end
+
+local function updateGui()
+	statusLabel.Text = isAiming and "Lock: ON" or "Lock: OFF"
+	statusLabel.TextColor3 = isAiming and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 80, 80)
+end
+
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+
+	if input.KeyCode == Enum.KeyCode.Q then
+		if isAiming then
+			isAiming = false
+			targetCharacter = nil
+			highlight.Adornee = nil
+			highlight.Enabled = false
+		else
+			local target = getClosestTarget()
+			if target then
+				isAiming = true
+				targetCharacter = target
+				highlight.Adornee = targetCharacter
+				highlight.Enabled = true
+			end
+		end
+		updateGui()
+	end
+end)
+
+RunService.RenderStepped:Connect(function()
+	if isAiming then
+		if not targetCharacter or not targetCharacter:FindFirstChild("Humanoid") or targetCharacter.Humanoid.Health <= 0 then
+			isAiming = false
+			targetCharacter = nil
+			highlight.Adornee = nil
+			highlight.Enabled = false
+			updateGui()
+		end
+	end
+end)
+
+local mt = getrawmetatable(game)
+setreadonly(mt, false)
+local old = mt.__index
+
+mt.__index = function(t, k)
+	if t == mouse and (k == "Hit" or k == "Target") and isAiming and targetCharacter and targetCharacter:FindFirstChild(AIM_PART) then
+		local predicted = getPredictedPosition(targetCharacter)
+		if predicted then
+			if k == "Hit" then
+				return CFrame.new(predicted)
+			elseif k == "Target" then
+				return targetCharacter[AIM_PART]
+			end
+		end
+	end
+	return old(t, k)
+end
+
+updateGui()
