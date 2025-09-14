@@ -54,11 +54,27 @@ task.spawn(function()
 	introLabel:Destroy()
 end)
 
-local fovRadius = 1200
-local maxPrediction = 0.2
+-- ██████████████████████████████████████████████████████████████████████████████████████████████████████
+-- █                                                                                                    █
+-- █           SILENT AIM SYSTEM AUS "LOOTEN" SCRIPT EINGEFÜGT (Original Toggle & GUI bleibt!)          █
+-- █                                                                                                    █
+-- ██████████████████████████████████████████████████████████████████████████████████████████████████████
+
+-- CONFIG (angepasst für dein Script, aber vom Looten-System inspiriert)
+local FOV_RADIUS = 30 * 3 -- 90 Pixel Standard-FOV (kann geändert werden)
+local HIT_PART = "Head"    -- Zielpunkt
+local PREDICTION_AMOUNT = 0.135 -- Vorhersage
+local ENABLE_PREDICTION = true  -- Vorhersage aktiv?
+
 local isAiming = false
-local targetCharacter = nil
-local AIM_PART = "Head"
+local targetPlayer = nil
+local highlight = Instance.new("Highlight")
+highlight.Name = "SilentHighlight"
+highlight.FillTransparency = 1
+highlight.OutlineColor = Color3.new(1, 1, 1)
+highlight.OutlineTransparency = 0
+highlight.Enabled = false
+highlight.Parent = game:GetService("CoreGui")
 
 local mainGui = Instance.new("ScreenGui", localPlayer:WaitForChild("PlayerGui"))
 mainGui.ResetOnSpawn = false
@@ -74,69 +90,83 @@ statusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
 statusLabel.Text = "Lock: OFF"
 Instance.new("UICorner", statusLabel).CornerRadius = UDim.new(0, 8)
 
-local highlight = Instance.new("Highlight")
-highlight.Name = "SilentHighlight"
-highlight.FillTransparency = 1
-highlight.OutlineColor = Color3.new(1, 1, 1)
-highlight.OutlineTransparency = 0
-highlight.Enabled = false
-highlight.Parent = game:GetService("CoreGui")
+-- HOOK: Überschreibe Mouse.Hit / Mouse.Target für Silent Aim
+local mt = getrawmetatable(game)
+setreadonly(mt, false)
+local oldIndex = mt.__index
 
+mt.__index = function(t, k)
+    if t == mouse and (k == "Hit" or k == "Target") and isAiming and targetPlayer then
+        local character = targetPlayer.Character
+        if not character then return oldIndex(t, k) end
+
+        local aimPart = character:FindFirstChild(HIT_PART)
+        if not aimPart then return oldIndex(t, k) end
+
+        local predictedPosition = aimPart.Position
+        if ENABLE_PREDICTION and character:FindFirstChild("HumanoidRootPart") then
+            local hrp = character.HumanoidRootPart
+            local velocity = hrp.Velocity
+            predictedPosition = aimPart.Position + velocity * PREDICTION_AMOUNT
+        end
+
+        if k == "Hit" then
+            return CFrame.new(predictedPosition)
+        elseif k == "Target" then
+            return aimPart
+        end
+    end
+    return oldIndex(t, k)
+end
+
+-- Finde nächstes Ziel innerhalb FOV
 local function getClosestTarget()
-	local closest = nil
-	local shortestDist = fovRadius
+    local closest = nil
+    local shortestDist = FOV_RADIUS
 
-	for _, plr in pairs(Players:GetPlayers()) do
-		if plr ~= localPlayer and plr.Character and plr.Character:FindFirstChild("Humanoid") and plr.Character.Humanoid.Health > 0 then
-			local head = plr.Character:FindFirstChild("Head")
-			if head then
-				local screenPos, onScreen = camera:WorldToViewportPoint(head.Position)
-				if onScreen then
-					local dist = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)).Magnitude
-					if dist < shortestDist then
-						shortestDist = dist
-						closest = plr.Character
-					end
-				end
-			end
-		end
-	end
+    for _, player in pairs(Players:GetPlayers()) do
+        if player == localPlayer or not player.Character then continue end
+        local humanoid = player.Character:FindFirstChild("Humanoid")
+        if not humanoid or humanoid.Health <= 0 then continue end
 
-	return closest
+        local head = player.Character:FindFirstChild(HIT_PART)
+        if not head then continue end
+
+        local screenPos, onScreen = camera:WorldToViewportPoint(head.Position)
+        if not onScreen then continue end
+
+        local dist = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(mouse.X, mouse.Y)).Magnitude
+        if dist < shortestDist then
+            shortestDist = dist
+            closest = player
+        end
+    end
+
+    return closest
 end
 
-local function getPredictedPosition(char)
-	local hrp = char:FindFirstChild("HumanoidRootPart")
-	local part = char:FindFirstChild(AIM_PART)
-	if not hrp or not part then return nil end
-
-	local velocity = hrp.Velocity
-	local distance = (camera.CFrame.Position - part.Position).Magnitude
-	local time = distance / 550
-	local predicted = part.Position + velocity * math.clamp(time, 0, maxPrediction)
-	return predicted
-end
-
+-- GUI Update Funktion
 local function updateGui()
 	statusLabel.Text = isAiming and "Lock: ON" or "Lock: OFF"
 	statusLabel.TextColor3 = isAiming and Color3.fromRGB(0, 255, 0) or Color3.fromRGB(255, 80, 80)
 end
 
+-- Toggle mit Q (wie in deinem Original)
 UserInputService.InputBegan:Connect(function(input, gp)
 	if gp then return end
 
 	if input.KeyCode == Enum.KeyCode.Q then
 		if isAiming then
 			isAiming = false
-			targetCharacter = nil
+			targetPlayer = nil
 			highlight.Adornee = nil
 			highlight.Enabled = false
 		else
 			local target = getClosestTarget()
 			if target then
 				isAiming = true
-				targetCharacter = target
-				highlight.Adornee = targetCharacter
+				targetPlayer = target
+				highlight.Adornee = targetPlayer.Character
 				highlight.Enabled = true
 			end
 		end
@@ -144,34 +174,17 @@ UserInputService.InputBegan:Connect(function(input, gp)
 	end
 end)
 
+-- Validierung: Ziel noch lebendig?
 RunService.RenderStepped:Connect(function()
 	if isAiming then
-		if not targetCharacter or not targetCharacter:FindFirstChild("Humanoid") or targetCharacter.Humanoid.Health <= 0 then
+		if not targetPlayer or not targetPlayer.Character or not targetPlayer.Character:FindFirstChild("Humanoid") or targetPlayer.Character.Humanoid.Health <= 0 then
 			isAiming = false
-			targetCharacter = nil
+			targetPlayer = nil
 			highlight.Adornee = nil
 			highlight.Enabled = false
 			updateGui()
 		end
 	end
 end)
-
-local mt = getrawmetatable(game)
-setreadonly(mt, false)
-local old = mt.__index
-
-mt.__index = function(t, k)
-	if t == mouse and (k == "Hit" or k == "Target") and isAiming and targetCharacter and targetCharacter:FindFirstChild(AIM_PART) then
-		local predicted = getPredictedPosition(targetCharacter)
-		if predicted then
-			if k == "Hit" then
-				return CFrame.new(predicted)
-			elseif k == "Target" then
-				return targetCharacter[AIM_PART]
-			end
-		end
-	end
-	return old(t, k)
-end
 
 updateGui()
