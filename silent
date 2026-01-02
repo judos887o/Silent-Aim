@@ -1,5 +1,5 @@
--- 🎯 PURE SILENT AIM (Q-LOCK)
--- Kein FOV, Kein Intro. Drück Q -> Aimlock auf Maus-Target.
+-- 🎯 PURE SILENT AIM (Q-LOCK) - MIT HUB INTEGRATION
+-- Drück Q -> Aimlock auf Maus-Target.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -10,18 +10,38 @@ local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 local Mouse = LocalPlayer:GetMouse()
 
+-- === HUB VERBINDUNG (wie AutoStomp) ===
+local Shared = getgenv().SchmecktHubPC or {}
+getgenv().SchmecktHubPC = Shared
+
+local key = "SilentAimQMethod"
+
+-- Alte Connections cleanen
+Shared.Connections = Shared.Connections or {}
+if Shared.Connections[key] then
+    for _, conn in pairs(Shared.Connections[key]) do
+        pcall(function() conn:Disconnect() end)
+    end
+end
+Shared.Connections[key] = {}
+
+-- Alte GUI/Highlight cleanen
+if Shared._QMethodGUI then pcall(function() Shared._QMethodGUI:Destroy() end) end
+if Shared._QMethodHL then pcall(function() Shared._QMethodHL:Destroy() end) end
+
 -- === STATUS ===
 local isLocked = false
 local targetPlr = nil
 local targetPart = nil
 local predictionPos = nil
-local Data = {} -- Velocity Cache
+local Data = {}
 
--- === GUI (Status Anzeige) ===
+-- === GUI ===
 local gui = Instance.new("ScreenGui")
-gui.Name = "SilentStatus"
+gui.Name = "SilentStatusQ"
 gui.ResetOnSpawn = false
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+Shared._QMethodGUI = gui
 
 local label = Instance.new("TextLabel")
 label.Size = UDim2.new(0, 200, 0, 40)
@@ -35,17 +55,17 @@ label.Parent = gui
 
 -- === HIGHLIGHT ===
 local hl = Instance.new("Highlight")
-hl.Name = "SilentHL"
+hl.Name = "SilentHLQ"
 hl.FillColor = Color3.fromRGB(255, 0, 0)
 hl.FillTransparency = 0.5
 hl.OutlineColor = Color3.fromRGB(255, 255, 255)
 hl.OutlineTransparency = 0
 hl.Enabled = false
 hl.Parent = game:GetService("CoreGui")
+Shared._QMethodHL = hl
 
 -- === FUNKTIONEN ===
 
--- Findet den Spieler, der am nächsten am Mauszeiger ist
 local function getClosestToMouse()
     local bestDist = math.huge
     local bestTarget = nil
@@ -60,20 +80,19 @@ local function getClosestToMouse()
             local hrp = char:FindFirstChild("HumanoidRootPart")
             
             if hum and hum.Health > 0 and head and hrp then
-                -- Check ob sichtbar (Wallcheck)
                 local params = RaycastParams.new()
                 params.FilterType = Enum.RaycastFilterType.Exclude
                 params.FilterDescendantsInstances = {LocalPlayer.Character, char}
                 local ray = Workspace:Raycast(Camera.CFrame.Position, (head.Position - Camera.CFrame.Position), params)
                 
-                if not ray then -- Wenn kein Hindernis
+                if not ray then
                     local pos, onScreen = Camera:WorldToViewportPoint(head.Position)
                     if onScreen then
                         local dist = (Vector2.new(pos.X, pos.Y) - mp).Magnitude
                         if dist < bestDist then
                             bestDist = dist
                             bestTarget = char
-                            bestPart = head -- Standard Head
+                            bestPart = head
                         end
                     end
                 end
@@ -83,39 +102,41 @@ local function getClosestToMouse()
     return bestTarget, bestPart
 end
 
--- Berechnet Prediction (Bewegung + Ping)
 local function getPrediction(char, part)
     if not char then return nil end
     local hrp = char:FindFirstChild("HumanoidRootPart")
     if not hrp then return part.Position end
 
-    -- Velocity Tracking
-    local t = tick()
     local vel = hrp.AssemblyLinearVelocity or Vector3.zero
-    if not Data[char] then Data[char] = {lastT = t, vel = vel} end
     
     local ping = 0.06
     pcall(function() ping = LocalPlayer:GetNetworkPing() end)
     
-    -- Einfache Prediction Formel
     local dist = (part.Position - Camera.CFrame.Position).Magnitude
     local timeToHit = (dist / 1000) + ping
     
     return part.Position + (vel * timeToHit)
 end
 
--- === LOGIK ===
+local function unlock()
+    isLocked = false
+    targetPlr = nil
+    targetPart = nil
+    predictionPos = nil
+    hl.Enabled = false
+    label.Text = ""
+end
 
 local function toggleLock()
+    -- Prüfe ob Hub es erlaubt: SilentAim AN und Methode ist QMethod
+    if not (Shared.SilentAim and Shared.SilentAimMethod == "QMethod") then
+        unlock()
+        return
+    end
+    
     if isLocked then
-        -- Unlocken
-        isLocked = false
-        targetPlr = nil
-        targetPart = nil
-        hl.Enabled = false
-        label.Text = ""
+        unlock()
     else
-        -- Suchen & Locken
         local t, p = getClosestToMouse()
         if t and p then
             isLocked = true
@@ -129,23 +150,41 @@ local function toggleLock()
     end
 end
 
--- Update Loop
-RunService.RenderStepped:Connect(function()
+-- === MAIN LOOP (wie AutoStomp mit Shared.Connections) ===
+table.insert(Shared.Connections[key], RunService.RenderStepped:Connect(function()
+    -- Prüfe Hub Status
+    if not (Shared.SilentAim and Shared.SilentAimMethod == "QMethod") then
+        if isLocked then unlock() end
+        gui.Enabled = false
+        hl.Enabled = false
+        return
+    end
+    
+    gui.Enabled = true
+    
     if isLocked and targetPlr and targetPlr.Parent then
         local hum = targetPlr:FindFirstChild("Humanoid")
-        -- Auto-Unlock wenn tot
         if not hum or hum.Health <= 0 then
-            toggleLock()
+            unlock()
             return
         end
-        -- Position updaten
         predictionPos = getPrediction(targetPlr, targetPart)
     else
-        if isLocked then toggleLock() end
+        if isLocked then unlock() end
     end
-end)
+end))
 
--- === HOOKS (Silent Aim Magic) ===
+-- === INPUT ===
+table.insert(Shared.Connections[key], UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.Q then
+        if Shared.SilentAim and Shared.SilentAimMethod == "QMethod" then
+            toggleLock()
+        end
+    end
+end))
+
+-- === HOOKS ===
 local mt = getrawmetatable(game)
 local oldNc = mt.__namecall
 local oldIdx = mt.__index
@@ -155,15 +194,14 @@ mt.__namecall = newcclosure(function(self, ...)
     local m = getnamecallmethod()
     local a = {...}
     
-    if isLocked and predictionPos then
-        -- Raycast (Guns)
+    -- Nur wenn Hub es erlaubt UND gelocked
+    if Shared.SilentAim and Shared.SilentAimMethod == "QMethod" and isLocked and predictionPos then
         if m == "Raycast" and self == Workspace then
             if a[1] and a[2] then
                 a[2] = (predictionPos - a[1]).Unit * a[2].Magnitude
                 return oldNc(self, unpack(a))
             end
         end
-        -- Mouse Hit (Tools)
         if self == Mouse and (m == "GetHit" or m == "Hit") then
             return CFrame.new(predictionPos)
         end
@@ -172,7 +210,7 @@ mt.__namecall = newcclosure(function(self, ...)
 end)
 
 mt.__index = newcclosure(function(self, k)
-    if isLocked and predictionPos and self == Mouse then
+    if Shared.SilentAim and Shared.SilentAimMethod == "QMethod" and isLocked and predictionPos and self == Mouse then
         if k == "Hit" then return CFrame.new(predictionPos) end
         if k == "Target" then return targetPart end
     end
@@ -180,10 +218,3 @@ mt.__index = newcclosure(function(self, k)
 end)
 
 setreadonly(mt, true)
-
--- Input
-UserInputService.InputBegan:Connect(function(input, gp)
-    if not gp and input.KeyCode == Enum.KeyCode.Q then
-        toggleLock()
-    end
-end)
