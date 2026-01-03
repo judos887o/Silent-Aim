@@ -1,22 +1,22 @@
--- 🎯 PURE SILENT AIM (Q-LOCK) - MIT HUB INTEGRATION
--- Drück Q -> Aimlock auf Maus-Target.
-
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+local Stats = game:GetService("Stats")
 
-local LocalPlayer = Players.LocalPlayer
+local LP = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
-local Mouse = LocalPlayer:GetMouse()
+local CachedMouse = LP:GetMouse()
 
--- === HUB VERBINDUNG (wie AutoStomp) ===
 local Shared = getgenv().SchmecktHubPC or {}
 getgenv().SchmecktHubPC = Shared
 
+Shared.SilentAim = true
+Shared.SilentAimMethod = "QMethod"
+
 local key = "SilentAimQMethod"
 
--- Alte Connections cleanen
 Shared.Connections = Shared.Connections or {}
 if Shared.Connections[key] then
     for _, conn in pairs(Shared.Connections[key]) do
@@ -25,22 +25,19 @@ if Shared.Connections[key] then
 end
 Shared.Connections[key] = {}
 
--- Alte GUI/Highlight cleanen
 if Shared._QMethodGUI then pcall(function() Shared._QMethodGUI:Destroy() end) end
-if Shared._QMethodHL then pcall(function() Shared._QMethodHL:Destroy() end) end
 
--- === STATUS ===
+local PREDICTION = 0.136
 local isLocked = false
 local targetPlr = nil
 local targetPart = nil
 local predictionPos = nil
-local Data = {}
+local IsGunEquipped = false
 
--- === GUI ===
 local gui = Instance.new("ScreenGui")
 gui.Name = "SilentStatusQ"
 gui.ResetOnSpawn = false
-gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+gui.Parent = LP:WaitForChild("PlayerGui")
 Shared._QMethodGUI = gui
 
 local label = Instance.new("TextLabel")
@@ -51,20 +48,59 @@ label.Text = ""
 label.Font = Enum.Font.GothamBlack
 label.TextSize = 20
 label.TextStrokeTransparency = 0.5
+label.TextColor3 = Color3.fromRGB(255, 50, 50)
 label.Parent = gui
 
--- === HIGHLIGHT ===
-local hl = Instance.new("Highlight")
-hl.Name = "SilentHLQ"
-hl.FillColor = Color3.fromRGB(255, 0, 0)
-hl.FillTransparency = 0.5
-hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-hl.OutlineTransparency = 0
-hl.Enabled = false
-hl.Parent = game:GetService("CoreGui")
-Shared._QMethodHL = hl
+-- Rotes Kreuz (Target Marker)
+local marker = Instance.new("Frame")
+marker.Size = UDim2.new(0, 10, 0, 10)
+marker.AnchorPoint = Vector2.new(0.5, 0.5)
+marker.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+marker.BorderSizePixel = 0
+marker.Visible = false
+marker.Parent = gui
+Instance.new("UICorner", marker).CornerRadius = UDim.new(1, 0) -- Kreisform
 
--- === FUNKTIONEN ===
+local function CheckGun()
+    local char = LP.Character
+    if not char then return false end
+    local tool = char:FindFirstChildOfClass("Tool")
+    if not tool then return false end
+    if tool:FindFirstChild("Handle") and not tool.Name:lower():find("wallet") and not tool.Name:lower():find("phone") then
+        return true
+    end
+    return false
+end
+
+local function IsKnocked(char)
+    if not char then return true end
+    local bodyEffects = char:FindFirstChild("BodyEffects")
+    if bodyEffects then
+        local ko = bodyEffects:FindFirstChild("K.O")
+        if ko and ko.Value == true then return true end
+    end
+    if char:FindFirstChild("GRABBING_CONSTRAINT") then return true end
+    local hum = char:FindFirstChild("Humanoid")
+    if hum and hum.Health < 2 then return true end
+    return false
+end
+
+local function Predict(plr, bone, hrp)
+    local vel = hrp.AssemblyLinearVelocity
+    local hum = plr.Character:FindFirstChild("Humanoid")
+    
+    if vel.Magnitude < 0.1 then return bone.Position end
+    
+    if hum and hum.MoveDirection.Magnitude > 0 then
+        return bone.Position + (hum.MoveDirection * 16 * PREDICTION)
+    end
+    
+    if vel.Y < -20 then
+        return bone.Position + (Vector3.new(vel.X, 0, vel.Z) * PREDICTION)
+    end
+    
+    return bone.Position + (vel * PREDICTION)
+end
 
 local function getClosestToMouse()
     local bestDist = math.huge
@@ -73,16 +109,18 @@ local function getClosestToMouse()
     local mp = UserInputService:GetMouseLocation()
 
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LocalPlayer and plr.Character then
+        if plr ~= LP and plr.Character then
             local char = plr.Character
             local hum = char:FindFirstChild("Humanoid")
             local head = char:FindFirstChild("Head")
             local hrp = char:FindFirstChild("HumanoidRootPart")
             
+            if IsKnocked(char) then continue end
+            
             if hum and hum.Health > 0 and head and hrp then
                 local params = RaycastParams.new()
                 params.FilterType = Enum.RaycastFilterType.Exclude
-                params.FilterDescendantsInstances = {LocalPlayer.Character, char}
+                params.FilterDescendantsInstances = {LP.Character, char}
                 local ray = Workspace:Raycast(Camera.CFrame.Position, (head.Position - Camera.CFrame.Position), params)
                 
                 if not ray then
@@ -102,33 +140,16 @@ local function getClosestToMouse()
     return bestTarget, bestPart
 end
 
-local function getPrediction(char, part)
-    if not char then return nil end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return part.Position end
-
-    local vel = hrp.AssemblyLinearVelocity or Vector3.zero
-    
-    local ping = 0.06
-    pcall(function() ping = LocalPlayer:GetNetworkPing() end)
-    
-    local dist = (part.Position - Camera.CFrame.Position).Magnitude
-    local timeToHit = (dist / 1000) + ping
-    
-    return part.Position + (vel * timeToHit)
-end
-
 local function unlock()
     isLocked = false
     targetPlr = nil
     targetPart = nil
     predictionPos = nil
-    hl.Enabled = false
     label.Text = ""
+    marker.Visible = false
 end
 
 local function toggleLock()
-    -- Prüfe ob Hub es erlaubt: SilentAim AN und Methode ist QMethod
     if not (Shared.SilentAim and Shared.SilentAimMethod == "QMethod") then
         unlock()
         return
@@ -142,49 +163,59 @@ local function toggleLock()
             isLocked = true
             targetPlr = t
             targetPart = p
-            hl.Adornee = t
-            hl.Enabled = true
             label.Text = "LOCKED: " .. t.Name
-            label.TextColor3 = Color3.fromRGB(255, 50, 50)
         end
     end
 end
 
--- === MAIN LOOP (wie AutoStomp mit Shared.Connections) ===
 table.insert(Shared.Connections[key], RunService.RenderStepped:Connect(function()
-    -- Prüfe Hub Status
-    if not (Shared.SilentAim and Shared.SilentAimMethod == "QMethod") then
+    if not Shared.SilentAim or Shared.SilentAimMethod ~= "QMethod" then
         if isLocked then unlock() end
         gui.Enabled = false
-        hl.Enabled = false
+        IsGunEquipped = false
         return
     end
     
     gui.Enabled = true
+    IsGunEquipped = CheckGun()
+    
+    if not IsGunEquipped then
+        predictionPos = nil
+        marker.Visible = false
+        return
+    end
     
     if isLocked and targetPlr and targetPlr.Parent then
         local hum = targetPlr:FindFirstChild("Humanoid")
-        if not hum or hum.Health <= 0 then
+        local hrp = targetPlr:FindFirstChild("HumanoidRootPart")
+        
+        if IsKnocked(targetPlr) or not hum or not hrp then
             unlock()
             return
         end
-        predictionPos = getPrediction(targetPlr, targetPart)
+        
+        predictionPos = Predict(Players:GetPlayerFromCharacter(targetPlr), targetPart, hrp)
+        
+        -- Marker Update
+        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+        if onScreen then
+            marker.Visible = true
+            marker.Position = UDim2.new(0, screenPos.X, 0, screenPos.Y)
+        else
+            marker.Visible = false
+        end
     else
         if isLocked then unlock() end
     end
 end))
 
--- === INPUT ===
 table.insert(Shared.Connections[key], UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
     if input.KeyCode == Enum.KeyCode.Q then
-        if Shared.SilentAim and Shared.SilentAimMethod == "QMethod" then
-            toggleLock()
-        end
+        toggleLock()
     end
 end))
 
--- === HOOKS ===
 local mt = getrawmetatable(game)
 local oldNc = mt.__namecall
 local oldIdx = mt.__index
@@ -192,27 +223,32 @@ setreadonly(mt, false)
 
 mt.__namecall = newcclosure(function(self, ...)
     local m = getnamecallmethod()
-    local a = {...}
     
-    -- Nur wenn Hub es erlaubt UND gelocked
-    if Shared.SilentAim and Shared.SilentAimMethod == "QMethod" and isLocked and predictionPos then
+    if IsGunEquipped and isLocked and predictionPos then
         if m == "Raycast" and self == Workspace then
+            local a = {...}
             if a[1] and a[2] then
-                a[2] = (predictionPos - a[1]).Unit * a[2].Magnitude
-                return oldNc(self, unpack(a))
+                return oldNc(self, a[1], (predictionPos - a[1]).Unit * a[2].Magnitude, unpack(a, 3))
             end
         end
-        if self == Mouse and (m == "GetHit" or m == "Hit") then
-            return CFrame.new(predictionPos)
+        
+        if self == CachedMouse then
+            if m == "GetHit" then return CFrame.new(predictionPos) end
+            if m == "GetTarget" then return targetPart end
         end
     end
     return oldNc(self, ...)
 end)
 
 mt.__index = newcclosure(function(self, k)
-    if Shared.SilentAim and Shared.SilentAimMethod == "QMethod" and isLocked and predictionPos and self == Mouse then
-        if k == "Hit" then return CFrame.new(predictionPos) end
-        if k == "Target" then return targetPart end
+    if IsGunEquipped and isLocked and predictionPos then
+        if self == CachedMouse then
+            if k == "Hit" then return CFrame.new(predictionPos) end
+            if k == "Target" then return targetPart end
+            if k == "X" then return predictionPos.X end
+            if k == "Y" then return predictionPos.Y end
+            if k == "Z" then return predictionPos.Z end
+        end
     end
     return oldIdx(self, k)
 end)
