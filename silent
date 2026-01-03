@@ -33,6 +33,7 @@ local targetPlr = nil
 local targetPart = nil
 local predictionPos = nil
 local IsGunEquipped = false
+local IsStomping = false
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "SilentStatusQ"
@@ -51,15 +52,26 @@ label.TextStrokeTransparency = 0.5
 label.TextColor3 = Color3.fromRGB(255, 50, 50)
 label.Parent = gui
 
--- Rotes Kreuz (Target Marker)
 local marker = Instance.new("Frame")
-marker.Size = UDim2.new(0, 10, 0, 10)
+marker.Size = UDim2.new(0, 6, 0, 6)
 marker.AnchorPoint = Vector2.new(0.5, 0.5)
 marker.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
 marker.BorderSizePixel = 0
 marker.Visible = false
 marker.Parent = gui
-Instance.new("UICorner", marker).CornerRadius = UDim.new(1, 0) -- Kreisform
+Instance.new("UICorner", marker).CornerRadius = UDim.new(1, 0)
+
+table.insert(Shared.Connections[key], UserInputService.InputBegan:Connect(function(i, gp)
+    if not gp and i.KeyCode == Enum.KeyCode.E then
+        IsStomping = true
+    end
+end))
+
+table.insert(Shared.Connections[key], UserInputService.InputEnded:Connect(function(i)
+    if i.KeyCode == Enum.KeyCode.E then
+        IsStomping = false
+    end
+end))
 
 local function CheckGun()
     local char = LP.Character
@@ -177,6 +189,14 @@ table.insert(Shared.Connections[key], RunService.RenderStepped:Connect(function(
     end
     
     gui.Enabled = true
+    
+    if IsStomping then
+        predictionPos = nil
+        marker.Visible = false
+        IsGunEquipped = false
+        return
+    end
+
     IsGunEquipped = CheckGun()
     
     if not IsGunEquipped then
@@ -196,7 +216,6 @@ table.insert(Shared.Connections[key], RunService.RenderStepped:Connect(function(
         
         predictionPos = Predict(Players:GetPlayerFromCharacter(targetPlr), targetPart, hrp)
         
-        -- Marker Update
         local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
         if onScreen then
             marker.Visible = true
@@ -224,7 +243,7 @@ setreadonly(mt, false)
 mt.__namecall = newcclosure(function(self, ...)
     local m = getnamecallmethod()
     
-    if IsGunEquipped and isLocked and predictionPos then
+    if IsGunEquipped and isLocked and predictionPos and not IsStomping then
         if m == "Raycast" and self == Workspace then
             local a = {...}
             if a[1] and a[2] then
@@ -241,7 +260,7 @@ mt.__namecall = newcclosure(function(self, ...)
 end)
 
 mt.__index = newcclosure(function(self, k)
-    if IsGunEquipped and isLocked and predictionPos then
+    if IsGunEquipped and isLocked and predictionPos and not IsStomping then
         if self == CachedMouse then
             if k == "Hit" then return CFrame.new(predictionPos) end
             if k == "Target" then return targetPart end
