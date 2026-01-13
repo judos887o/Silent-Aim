@@ -6,8 +6,39 @@ local CoreGui = game:GetService("CoreGui")
 local Stats = game:GetService("Stats")
 
 local LP = Players.LocalPlayer
+local Client = LP
 local Camera = Workspace.CurrentCamera
 local CachedMouse = LP:GetMouse()
+local Mouse = LP:GetMouse()
+
+getgenv().Looten = {
+    ['Silent'] = {
+        Normal = { Enabled = true, HitChance = 100 },
+        HitPart = { NearestPoint = true, HitPart = 'HumanoidRootPart' },
+        Prediction = { Enabled = true, Prediction = 0.135 },
+    },
+    ['Fov'] = {
+        SilentAim = { Radius = 130 }, -- Radius für die Q-Auswahl
+    },
+    ['Adjustment'] = {
+        ['Checks'] = {
+            Resolver = true,
+            Wall_Check = true,
+            Disable_Ground_Shots = true,
+            Knocked_Check = true,
+            NoGroundShots = true,
+            Crew_Check = false,
+        },
+    },
+}
+
+getgenv().AGV = 0.5
+getgenv().WAGA = -20
+getgenv().DD = true
+getgenv().DV = 86
+getgenv().DUG = true
+getgenv().UD = -30
+getgenv().DC = true
 
 local Shared = getgenv().SchmecktHubPC or {}
 getgenv().SchmecktHubPC = Shared
@@ -17,23 +48,21 @@ Shared.SilentAimMethod = "QMethod"
 
 local key = "SilentAimQMethod"
 
-Shared.Connections = Shared.Connections or {}
-if Shared.Connections[key] then
+if Shared.Connections and Shared.Connections[key] then
     for _, conn in pairs(Shared.Connections[key]) do
         pcall(function() conn:Disconnect() end)
     end
 end
+Shared.Connections = Shared.Connections or {}
 Shared.Connections[key] = {}
 
 if Shared._QMethodGUI then pcall(function() Shared._QMethodGUI:Destroy() end) end
 
-local PREDICTION = 0.136
 local isLocked = false
 local targetPlr = nil
 local targetPart = nil
 local predictionPos = nil
 local IsGunEquipped = false
-local IsStomping = false
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "SilentStatusQ"
@@ -53,7 +82,7 @@ label.TextColor3 = Color3.fromRGB(255, 50, 50)
 label.Parent = gui
 
 local marker = Instance.new("Frame")
-marker.Size = UDim2.new(0, 6, 0, 6)
+marker.Size = UDim2.new(0, 10, 0, 10)
 marker.AnchorPoint = Vector2.new(0.5, 0.5)
 marker.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
 marker.BorderSizePixel = 0
@@ -61,17 +90,13 @@ marker.Visible = false
 marker.Parent = gui
 Instance.new("UICorner", marker).CornerRadius = UDim.new(1, 0)
 
-table.insert(Shared.Connections[key], UserInputService.InputBegan:Connect(function(i, gp)
-    if not gp and i.KeyCode == Enum.KeyCode.E then
-        IsStomping = true
-    end
-end))
 
-table.insert(Shared.Connections[key], UserInputService.InputEnded:Connect(function(i)
-    if i.KeyCode == Enum.KeyCode.E then
-        IsStomping = false
+local function IsPlayerValid(plr)
+    if plr and plr.Character and plr.Character:FindFirstChild('HumanoidRootPart') and plr.Character:FindFirstChild('Humanoid') and plr.Character:FindFirstChild('Head') then
+        return true
     end
-end))
+    return false
+end
 
 local function CheckGun()
     local char = LP.Character
@@ -84,73 +109,120 @@ local function CheckGun()
     return false
 end
 
-local function IsKnocked(char)
-    if not char then return true end
-    local bodyEffects = char:FindFirstChild("BodyEffects")
-    if bodyEffects then
-        local ko = bodyEffects:FindFirstChild("K.O")
-        if ko and ko.Value == true then return true end
+local function IsVisible(Part, PartDescendant)
+    if not getgenv().Looten.Adjustment.Checks.Wall_Check then return true end
+    
+    local Character = Client.Character or Client.CharacterAdded:Wait()
+    local Origin = Camera.CFrame.Position
+    local _, OnScreen = Camera:WorldToViewportPoint(Part.Position)
+
+    if OnScreen then
+        local raycastParams = RaycastParams.new()
+        raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+        raycastParams.FilterDescendantsInstances = { Character, Camera }
+
+        local Result = Workspace:Raycast(Origin, Part.Position - Origin, raycastParams)
+
+        if Result then
+            local PartHit = Result.Instance
+            local Visible = (not PartHit or PartHit:IsDescendantOf(PartDescendant))
+            return Visible
+        end
     end
-    if char:FindFirstChild("GRABBING_CONSTRAINT") then return true end
-    local hum = char:FindFirstChild("Humanoid")
-    if hum and hum.Health < 2 then return true end
     return false
 end
 
-local function Predict(plr, bone, hrp)
-    local vel = hrp.AssemblyLinearVelocity
-    local hum = plr.Character:FindFirstChild("Humanoid")
+local function GetClosestBodyPart(character)
+    local ClosestDistance = math.huge
+    local BodyPart = nil
     
-    if vel.Magnitude < 0.1 then return bone.Position end
-    
-    if hum and hum.MoveDirection.Magnitude > 0 then
-        return bone.Position + (hum.MoveDirection * 16 * PREDICTION)
-    end
-    
-    if vel.Y < -20 then
-        return bone.Position + (Vector3.new(vel.X, 0, vel.Z) * PREDICTION)
-    end
-    
-    return bone.Position + (vel * PREDICTION)
-end
-
-local function getClosestToMouse()
-    local bestDist = math.huge
-    local bestTarget = nil
-    local bestPart = nil
-    local mp = UserInputService:GetMouseLocation()
-
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= LP and plr.Character then
-            local char = plr.Character
-            local hum = char:FindFirstChild("Humanoid")
-            local head = char:FindFirstChild("Head")
-            local hrp = char:FindFirstChild("HumanoidRootPart")
-            
-            if IsKnocked(char) then continue end
-            
-            if hum and hum.Health > 0 and head and hrp then
-                local params = RaycastParams.new()
-                params.FilterType = Enum.RaycastFilterType.Exclude
-                params.FilterDescendantsInstances = {LP.Character, char}
-                local ray = Workspace:Raycast(Camera.CFrame.Position, (head.Position - Camera.CFrame.Position), params)
-                
-                if not ray then
-                    local pos, onScreen = Camera:WorldToViewportPoint(head.Position)
-                    if onScreen then
-                        local dist = (Vector2.new(pos.X, pos.Y) - mp).Magnitude
-                        if dist < bestDist then
-                            bestDist = dist
-                            bestTarget = char
-                            bestPart = head
-                        end
+    if character then
+        for _, x in pairs(character:GetChildren()) do
+            if x:IsA("BasePart") and (x.Name == "Head" or x.Name == "HumanoidRootPart" or x.Name == "UpperTorso" or x.Name == "LowerTorso") then
+                local Position, OnScreen = Camera:WorldToViewportPoint(x.Position)
+                if OnScreen then
+                    local Distance = (Vector2.new(Mouse.X, Mouse.Y) - Vector2.new(Position.X, Position.Y)).Magnitude
+                    if Distance < ClosestDistance then
+                        ClosestDistance = Distance
+                        BodyPart = x
                     end
                 end
             end
         end
     end
-    return bestTarget, bestPart
+    return BodyPart
 end
+
+local function GetBestTargetLooten()
+    local FoundTarget, Closest = nil, math.huge
+    local MousePos = UserInputService:GetMouseLocation()
+
+    for _, v in pairs(Players:GetPlayers()) do
+        if v ~= Client and v.Character and v.Character:FindFirstChild('HumanoidRootPart') then
+            local char = v.Character
+            
+            if getgenv().Looten.Adjustment.Checks.Knocked_Check then
+                local be = char:FindFirstChild("BodyEffects")
+                if be and be:FindFirstChild("K.O") and be["K.O"].Value then continue end
+                if char:FindFirstChild("GRABBING_CONSTRAINT") then continue end
+            end
+
+            local AimPart = char.HumanoidRootPart
+            if IsVisible(AimPart, char) then
+                local Pos, OnScreen = Camera:WorldToViewportPoint(AimPart.Position)
+                if OnScreen then
+                    local Distance = (Vector2.new(MousePos.X, MousePos.Y) - Vector2.new(Pos.X, Pos.Y)).Magnitude
+                    if Distance < Closest and Distance <= getgenv().Looten.Fov.SilentAim.Radius then
+                        Closest = Distance
+                        FoundTarget = v
+                    end
+                end
+            end
+        end
+    end
+    return FoundTarget
+end
+
+local function CalculatePredictionLooten(TargetPlayer)
+    if not IsPlayerValid(TargetPlayer) then return nil, nil end
+
+    local TargetChar = TargetPlayer.Character
+    local HitPartName = getgenv().Looten.Silent.HitPart.HitPart
+    
+    if getgenv().Looten.Silent.HitPart.NearestPoint then
+        local nearest = GetClosestBodyPart(TargetChar)
+        if nearest then HitPartName = nearest.Name end
+    end
+
+    local TargetPart = TargetChar:FindFirstChild(HitPartName)
+    if not TargetPart then return nil, nil end
+
+    local TargetCF = TargetPart.CFrame
+    local TargetVel = TargetChar.HumanoidRootPart.Velocity
+    local TargetMov = TargetChar.Humanoid.MoveDirection
+    local SilentPos = TargetCF.Position
+
+    local usePrediction = false
+    if getgenv().DD then
+        local mag = TargetVel.magnitude
+        if mag > getgenv().DV then usePrediction = true
+        elseif mag < 1 and TargetMov.magnitude > 0.01 then usePrediction = true
+        elseif mag > 5 and TargetMov.magnitude < 0.01 then usePrediction = true
+        end
+    end
+
+    if getgenv().Looten.Adjustment.Checks.NoGroundShots and TargetVel.Y < getgenv().WAGA then
+        SilentPos = TargetCF.Position + (Vector3.new(TargetVel.X, (TargetVel.Y * getgenv().AGV), TargetVel.Z) * getgenv().Looten.Silent.Prediction.Prediction)
+    elseif getgenv().DUG and TargetVel.Y < getgenv().UD then
+        SilentPos = TargetCF.Position + (Vector3.new(TargetVel.X, 0, TargetVel.Z) * getgenv().Looten.Silent.Prediction.Prediction)
+    elseif usePrediction or getgenv().Looten.Silent.Prediction.Enabled then
+        SilentPos = TargetCF.Position + (TargetVel * getgenv().Looten.Silent.Prediction.Prediction)
+    end
+
+    return SilentPos, TargetPart
+end
+
+
 
 local function unlock()
     isLocked = false
@@ -170,11 +242,13 @@ local function toggleLock()
     if isLocked then
         unlock()
     else
-        local t, p = getClosestToMouse()
-        if t and p then
+        -- HIER: Nutzt Looten Selector
+        local t = GetBestTargetLooten()
+        if t then
             isLocked = true
             targetPlr = t
-            targetPart = p
+            -- Initial part, wird im Loop geupdatet
+            targetPart = t.Character.HumanoidRootPart 
             label.Text = "LOCKED: " .. t.Name
         end
     end
@@ -189,14 +263,6 @@ table.insert(Shared.Connections[key], RunService.RenderStepped:Connect(function(
     end
     
     gui.Enabled = true
-    
-    if IsStomping then
-        predictionPos = nil
-        marker.Visible = false
-        IsGunEquipped = false
-        return
-    end
-
     IsGunEquipped = CheckGun()
     
     if not IsGunEquipped then
@@ -205,23 +271,22 @@ table.insert(Shared.Connections[key], RunService.RenderStepped:Connect(function(
         return
     end
     
-    if isLocked and targetPlr and targetPlr.Parent then
-        local hum = targetPlr:FindFirstChild("Humanoid")
-        local hrp = targetPlr:FindFirstChild("HumanoidRootPart")
+    if isLocked and targetPlr and IsPlayerValid(targetPlr) then
+        local pPos, pPart = CalculatePredictionLooten(targetPlr)
         
-        if IsKnocked(targetPlr) or not hum or not hrp then
-            unlock()
-            return
-        end
-        
-        predictionPos = Predict(Players:GetPlayerFromCharacter(targetPlr), targetPart, hrp)
-        
-        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
-        if onScreen then
-            marker.Visible = true
-            marker.Position = UDim2.new(0, screenPos.X, 0, screenPos.Y)
+        if pPos and pPart then
+            predictionPos = pPos
+            targetPart = pPart
+            
+            local screenPos, onScreen = Camera:WorldToViewportPoint(predictionPos)
+            if onScreen then
+                marker.Visible = true
+                marker.Position = UDim2.new(0, screenPos.X, 0, screenPos.Y)
+            else
+                marker.Visible = false
+            end
         else
-            marker.Visible = false
+            unlock()
         end
     else
         if isLocked then unlock() end
@@ -235,6 +300,7 @@ table.insert(Shared.Connections[key], UserInputService.InputBegan:Connect(functi
     end
 end))
 
+
 local mt = getrawmetatable(game)
 local oldNc = mt.__namecall
 local oldIdx = mt.__index
@@ -243,10 +309,11 @@ setreadonly(mt, false)
 mt.__namecall = newcclosure(function(self, ...)
     local m = getnamecallmethod()
     
-    if IsGunEquipped and isLocked and predictionPos and not IsStomping then
+    if IsGunEquipped and isLocked and predictionPos then
         if m == "Raycast" and self == Workspace then
             local a = {...}
             if a[1] and a[2] then
+                -- Looten Logic: Redirect Raycast to Prediction Position
                 return oldNc(self, a[1], (predictionPos - a[1]).Unit * a[2].Magnitude, unpack(a, 3))
             end
         end
@@ -260,7 +327,7 @@ mt.__namecall = newcclosure(function(self, ...)
 end)
 
 mt.__index = newcclosure(function(self, k)
-    if IsGunEquipped and isLocked and predictionPos and not IsStomping then
+    if IsGunEquipped and isLocked and predictionPos then
         if self == CachedMouse then
             if k == "Hit" then return CFrame.new(predictionPos) end
             if k == "Target" then return targetPart end
