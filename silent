@@ -18,7 +18,7 @@ getgenv().Looten = {
         Prediction = { Enabled = true, Prediction = 0.135 },
     },
     ['Fov'] = {
-        SilentAim = { Radius = 130 }, -- Radius für die Q-Auswahl
+        SilentAim = { Radius = 130 },
     },
     ['Adjustment'] = {
         ['Checks'] = {
