@@ -6,13 +6,12 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LP = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
-local Mouse = LP:GetMouse()
+local CachedMouse = LP:GetMouse()
 
-local LOCK_TOLERANCE = 150
+local LOCK_TOLERANCE = 120
 
 getgenv().Looten = {
     ['Silent'] = {
@@ -21,7 +20,14 @@ getgenv().Looten = {
         Prediction = { Enabled = true, Prediction = 0.135 },
     },
     ['Adjustment'] = {
-        ['Checks'] = { Resolver = true, Wall_Check = true, Disable_Ground_Shots = true, Knocked_Check = true, NoGroundShots = true, Crew_Check = false },
+        ['Checks'] = {
+            Resolver = true,
+            Wall_Check = true,
+            Disable_Ground_Shots = true,
+            Knocked_Check = true,
+            NoGroundShots = true,
+            Crew_Check = false,
+        },
     },
 }
 
@@ -81,29 +87,12 @@ local function CheckGun()
     return tool:FindFirstChild("Handle")
 end
 
-local function GetClosestBodyPart(char)
-    local min, body = math.huge, nil
-    for _, x in pairs(char:GetChildren()) do
-        if x:IsA("BasePart") then
-            local pos, onScreen = Camera:WorldToViewportPoint(x.Position)
-            if onScreen then
-                local dist = (Vector2.new(Mouse.X, Mouse.Y) - Vector2.new(pos.X, pos.Y)).Magnitude
-                if dist < min then min = dist; body = x end
-            end
-        end
-    end
-    return body
-end
-
 local function GetTargetForQLock()
     local MousePos = UserInputService:GetMouseLocation()
     local Closest = math.huge
     local Target = nil
     for _, v in pairs(Players:GetPlayers()) do
         if v ~= LP and IsPlayerValid(v) then
-            local be = v.Character:FindFirstChild("BodyEffects")
-            if be and be:FindFirstChild("K.O") and be["K.O"].Value == true then continue end
-
             local pos, onScreen = Camera:WorldToViewportPoint(v.Character.HumanoidRootPart.Position)
             if onScreen then
                 local dist = (Vector2.new(MousePos.X, MousePos.Y) - Vector2.new(pos.X, pos.Y)).Magnitude
@@ -121,40 +110,26 @@ local function CalculatePrediction(TargetPlayer)
     if not IsPlayerValid(TargetPlayer) then return nil, nil end
     local Char = TargetPlayer.Character
     local PartName = getgenv().Looten.Silent.HitPart.HitPart
-    
     if getgenv().Looten.Silent.HitPart.NearestPoint then
-        local n = GetClosestBodyPart(Char)
-        if n then PartName = n.Name end
-    end
-    
-    local Part = Char:FindFirstChild(PartName)
-    if not Part then return nil, nil end
-
-    local TargetCF = Part.CFrame
-    local TargetVel = Char.HumanoidRootPart.Velocity
-    local TargetMov = Char.Humanoid.MoveDirection
-    local SilentPos = TargetCF.Position
-
-    local HighVel = false
-    if getgenv().DD then
-        local mag = TargetVel.magnitude
-        if mag > getgenv().DV then HighVel = true
-        elseif mag < 1 and TargetMov.magnitude > 0.01 then HighVel = true
-        elseif mag > 5 and TargetMov.magnitude < 0.01 then HighVel = true
+        local minDst = math.huge
+        for _, p in pairs(Char:GetChildren()) do
+            if p:IsA("BasePart") then
+                local pos, onScreen = Camera:WorldToViewportPoint(p.Position)
+                if onScreen then
+                    local d = (Vector2.new(UserInputService:GetMouseLocation().X, UserInputService:GetMouseLocation().Y) - Vector2.new(pos.X, pos.Y)).Magnitude
+                    if d < minDst then minDst = d; PartName = p.Name end
+                end
+            end
         end
     end
-
-    if getgenv().Looten.Adjustment.Checks.NoGroundShots and TargetVel.Y < getgenv().WAGA then
-        SilentPos = TargetCF.Position + (Vector3.new(TargetVel.X, (TargetVel.Y * getgenv().AGV), TargetVel.Z) * getgenv().Looten.Silent.Prediction.Prediction)
-    elseif getgenv().DUG and TargetVel.Y < getgenv().UD then
-        SilentPos = TargetCF.Position + (Vector3.new(TargetVel.X, 0, TargetVel.Z) * getgenv().Looten.Silent.Prediction.Prediction)
-    elseif HighVel then
-        SilentPos = TargetCF.Position + (TargetMov * getgenv().Looten.Silent.Prediction.Prediction * 16)
-    elseif getgenv().Looten.Silent.Prediction.Enabled then
-        SilentPos = TargetCF.Position + (Vector3.new(TargetVel.X, TargetVel.Y, TargetVel.Z) * getgenv().Looten.Silent.Prediction.Prediction)
+    local Part = Char:FindFirstChild(PartName)
+    if not Part then return nil, nil end
+    local Pos = Part.CFrame.Position
+    local Vel = Char.HumanoidRootPart.Velocity
+    if getgenv().Looten.Silent.Prediction.Enabled then
+        Pos = Pos + (Vel * getgenv().Looten.Silent.Prediction.Prediction)
     end
-
-    return SilentPos, Part
+    return Pos, Part
 end
 
 local function unlock()
@@ -167,23 +142,15 @@ local function unlock()
 end
 
 local function toggleLock()
-    local potentialNewTarget = GetTargetForQLock()
-
     if isLocked then
-        if potentialNewTarget and potentialNewTarget ~= targetPlr then
-            targetPlr = potentialNewTarget
-            targetPart = potentialNewTarget.Character.HumanoidRootPart
-            label.Text = "LOCKED: " .. potentialNewTarget.DisplayName
-            label.TextColor3 = Color3.fromRGB(255, 50, 50)
-        else
-            unlock()
-        end
+        unlock()
     else
-        if potentialNewTarget then
+        local t = GetTargetForQLock()
+        if t then
             isLocked = true
-            targetPlr = potentialNewTarget
-            targetPart = potentialNewTarget.Character.HumanoidRootPart
-            label.Text = "LOCKED: " .. potentialNewTarget.DisplayName
+            targetPlr = t
+            targetPart = t.Character.HumanoidRootPart
+            label.Text = "LOCKED: " .. t.DisplayName
             label.TextColor3 = Color3.fromRGB(255, 50, 50)
         else
             unlock()
@@ -192,70 +159,19 @@ local function toggleLock()
 end
 
 table.insert(Connections, RunService.RenderStepped:Connect(function()
+    if not Shared.SilentAim or Shared.SilentAimMethod ~= "QMethod" then
+        if getgenv().SilentAim_Q_Destroy then getgenv().SilentAim_Q_Destroy() end
+        return
+    end
     IsGunEquipped = CheckGun()
     if not IsGunEquipped then
         predictionPos = nil
         marker.Visible = false
-        return 
+        return
     end
-
     if isLocked and targetPlr and IsPlayerValid(targetPlr) then
         local pPos, pPart = CalculatePrediction(targetPlr)
         if pPos then
             predictionPos = pPos
             targetPart = pPart
-            local sPos, onScreen = Camera:WorldToViewportPoint(predictionPos)
-            if onScreen then
-                marker.Visible = true
-                marker.Position = UDim2.new(0, sPos.X, 0, sPos.Y)
-            else
-                marker.Visible = false
-            end
-        else
-            unlock()
-        end
-    else
-        if isLocked then unlock() end
-    end
-end))
-
-table.insert(Connections, UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then return end
-    if input.KeyCode == Enum.KeyCode.Q then
-        toggleLock()
-    end
-end))
-
-local mt = getrawmetatable(game)
-local oldNc = mt.__namecall
-setreadonly(mt, false)
-
-mt.__namecall = newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    local args = {...}
-
-    if method == "FireServer" and isLocked and predictionPos and IsGunEquipped then
-        if args[1] == "MOUSE" then
-            args[2] = predictionPos
-            return oldNc(self, unpack(args))
-        end
-    end
-
-    return oldNc(self, ...)
-end)
-
-setreadonly(mt, true)
-
-getgenv().SilentAim_Q_Destroy = function()
-    pcall(unlock)
-    if gui then gui:Destroy() end
-    for _, c in pairs(Connections) do pcall(function() c:Disconnect() end) end
-    Connections = {}
-    
-    local mt = getrawmetatable(game)
-    setreadonly(mt, false)
-    mt.__namecall = oldNc
-    setreadonly(mt, true)
-    
-    getgenv().SilentAim_Q_Destroy = nil
-end
+            local sPos, on
