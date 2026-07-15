@@ -1,265 +1,248 @@
-if getgenv().SilentAim_FOV_Destroy then pcall(getgenv().SilentAim_FOV_Destroy) end
 if getgenv().SilentAim_Q_Destroy then pcall(getgenv().SilentAim_Q_Destroy) end
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
-local CoreGui = game:GetService("CoreGui")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LP = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
 local Mouse = LP:GetMouse()
+local Camera = workspace.CurrentCamera
 
-local LOCK_TOLERANCE = 150
+getgenv().Prediction = 0.145
+getgenv().HitPart = "HumanoidRootPart"
+getgenv().LockTolerance = 160
 
-local Shared = getgenv().SchmecktHubPC or {}
-getgenv().SchmecktHubPC = Shared
-
-getgenv().Looten = getgenv().Looten or {
-    ['Silent'] = {
-        Normal = { Enabled = true, HitChance = 100 },
-        HitPart = { NearestPoint = false, HitPart = 'HumanoidRootPart' },
-        Prediction = { Enabled = true, Prediction = tonumber(Shared.SilentPrediction) or 0.135 },
-    },
-    ['Adjustment'] = {
-        ['Checks'] = { Resolver = true, Wall_Check = true, Disable_Ground_Shots = true, Knocked_Check = true, NoGroundShots = true, Crew_Check = false },
-    },
-}
-
-getgenv().AGV = getgenv().AGV or 0.5
-getgenv().WAGA = getgenv().WAGA or -20
-getgenv().DD = getgenv().DD ~= nil and getgenv().DD or true
-getgenv().DV = getgenv().DV or 86
-getgenv().DUG = getgenv().DUG ~= nil and getgenv().DUG or true
-getgenv().UD = getgenv().UD or -30
-getgenv().DC = getgenv().DC ~= nil and getgenv().DC or true
-
+local TargetPlr = nil
+local IsLocked = false
 local Connections = {}
+local LastPositions = {}
+local LastTime = {}
+local AimKey = Enum.KeyCode.Q
+local WaitingForKey = false
 
-local gui = Instance.new("ScreenGui")
-gui.Name = "SilentStatusQ"
-gui.ResetOnSpawn = false
-gui.Parent = CoreGui
+local gui = Instance.new("ScreenGui", game:GetService("CoreGui"))
+gui.Name = "SilentAim_Stealth"
 
-local label = Instance.new("TextLabel")
-label.Size = UDim2.new(0, 200, 0, 40)
-label.Position = UDim2.new(0.5, -100, 0.85, 0)
-label.BackgroundTransparency = 1
-label.Text = "Waiting for Target.. (press Q)"
-label.Font = Enum.Font.GothamBlack
-label.TextSize = 20
-label.TextStrokeTransparency = 0.5
+local container = Instance.new("Frame", gui)
+container.Size = UDim2.new(0, 340, 0, 52)
+container.Position = UDim2.new(0.5, -170, 0.82, 0)
+container.BackgroundTransparency = 1
+
+local keyBox = Instance.new("TextBox", container)
+keyBox.Size = UDim2.new(0, 52, 0, 52)
+keyBox.Position = UDim2.new(0, 0, 0, 0)
+keyBox.BackgroundTransparency = 0.25
+keyBox.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+keyBox.Text = "Q"
+keyBox.Font = Enum.Font.GothamBold
+keyBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+keyBox.TextSize = 20
+keyBox.ClearTextOnFocus = true
+keyBox.PlaceholderText = "..."
+keyBox.PlaceholderColor3 = Color3.fromRGB(150, 150, 150)
+Instance.new("UICorner", keyBox).CornerRadius = UDim.new(0, 10)
+local keyStroke = Instance.new("UIStroke", keyBox)
+keyStroke.Color = Color3.fromRGB(80, 80, 80)
+keyStroke.Thickness = 1.5
+
+local label = Instance.new("TextLabel", container)
+label.Size = UDim2.new(0, 280, 0, 52)
+label.Position = UDim2.new(0, 60, 0, 0)
+label.BackgroundTransparency = 0.25
+label.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+label.Text = "Silent Aim | Ready"
+label.Font = Enum.Font.GothamBold
 label.TextColor3 = Color3.fromRGB(255, 255, 255)
-label.Parent = gui
+label.TextSize = 17
+label.TextStrokeTransparency = 0.7
+Instance.new("UICorner", label).CornerRadius = UDim.new(0, 10)
 
-local marker = Instance.new("Frame")
-marker.Size = UDim2.new(0, 8, 0, 8)
-marker.AnchorPoint = Vector2.new(0.5, 0.5)
-marker.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+local marker = Instance.new("Frame", gui)
+marker.Size = UDim2.new(0, 13, 0, 13)
+marker.BackgroundColor3 = Color3.fromRGB(255, 60, 60)
+marker.BorderSizePixel = 0
 marker.Visible = false
-marker.Parent = gui
 Instance.new("UICorner", marker).CornerRadius = UDim.new(1, 0)
+local mStroke = Instance.new("UIStroke", marker)
+mStroke.Color = Color3.fromRGB(255, 255, 255)
+mStroke.Thickness = 2
 
-local isLocked = false
-local targetPlr = nil
-local targetPart = nil
-local predictionPos = nil
-local IsGunEquipped = false
-
-local function IsPlayerValid(plr)
-    if plr and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") and plr.Character:FindFirstChild("Humanoid") and plr.Character:FindFirstChild("Head") then
-        if plr.Character.Humanoid.Health > 0 then return true end
+keyBox.FocusLost:Connect(function(enterPressed)
+    local input = keyBox.Text:upper():gsub("%s", "")
+    if input == "" then
+        keyBox.Text = AimKey.Name
+        return
     end
-    return false
-end
 
-local function CheckGun()
-    local char = LP.Character
-    if not char then return false end
-    local tool = char:FindFirstChildOfClass("Tool")
-    if not tool then return false end
-    return tool:FindFirstChild("Handle")
-end
+    local success, key = pcall(function()
+        return Enum.KeyCode[input]
+    end)
 
-local function GetClosestBodyPart(char)
-    local min, body = math.huge, nil
-    for _, x in pairs(char:GetChildren()) do
-        if x:IsA("BasePart") then
-            local pos, onScreen = Camera:WorldToViewportPoint(x.Position)
-            if onScreen then
-                local dist = (Vector2.new(Mouse.X, Mouse.Y) - Vector2.new(pos.X, pos.Y)).Magnitude
-                if dist < min then min = dist; body = x end
-            end
+    if success and key then
+        AimKey = key
+        keyBox.Text = key.Name
+        keyStroke.Color = Color3.fromRGB(0, 255, 80)
+        task.delay(0.5, function()
+            keyStroke.Color = Color3.fromRGB(80, 80, 80)
+        end)
+    else
+        keyBox.Text = AimKey.Name
+        keyStroke.Color = Color3.fromRGB(255, 50, 50)
+        task.delay(0.5, function()
+            keyStroke.Color = Color3.fromRGB(80, 80, 80)
+        end)
+    end
+end)
+
+local function GetSmoothedVelocity(player)
+    local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return Vector3.zero end
+
+    local now = tick()
+    local pid = player.UserId
+
+    if LastPositions[pid] and LastTime[pid] then
+        local dt = now - LastTime[pid]
+        if dt > 0 then
+            local vel = (root.Position - LastPositions[pid]) / dt
+            LastPositions[pid] = root.Position
+            LastTime[pid] = now
+            return vel
         end
     end
-    return body
+
+    LastPositions[pid] = root.Position
+    LastTime[pid] = now
+    return root.Velocity
 end
 
-local function GetTargetForQLock()
-    local MousePos = UserInputService:GetMouseLocation()
-    local Closest = math.huge
-    local Target = nil
-    for _, v in pairs(Players:GetPlayers()) do
-        if v ~= LP and IsPlayerValid(v) then
-            local be = v.Character:FindFirstChild("BodyEffects")
-            if be and be:FindFirstChild("K.O") and be["K.O"].Value == true then continue end
+local function GetClosestTarget()
+    local mousePos = UserInputService:GetMouseLocation()
+    local shortest = getgenv().LockTolerance
+    local target = nil
 
-            local pos, onScreen = Camera:WorldToViewportPoint(v.Character.HumanoidRootPart.Position)
-            if onScreen then
-                local dist = (Vector2.new(MousePos.X, MousePos.Y) - Vector2.new(pos.X, pos.Y)).Magnitude
-                if dist < Closest and dist < LOCK_TOLERANCE then
-                    Closest = dist
-                    Target = v
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LP and player.Character and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
+            local hitPart = player.Character:FindFirstChild(getgenv().HitPart)
+            if hitPart then
+                local screenPos, visible = Camera:WorldToViewportPoint(hitPart.Position)
+                if visible then
+                    local distance = (mousePos - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
+                    if distance < shortest then
+                        shortest = distance
+                        target = player
+                    end
                 end
             end
         end
     end
-    return Target
+    return target
 end
 
-local function CalculatePrediction(TargetPlayer)
-    if not IsPlayerValid(TargetPlayer) then return nil, nil end
-    local Char = TargetPlayer.Character
-    local PartName = getgenv().Looten.Silent.HitPart.HitPart
-    
-    if getgenv().Looten.Silent.HitPart.NearestPoint then
-        local n = GetClosestBodyPart(Char)
-        if n then PartName = n.Name end
-    end
-    
-    local Part = Char:FindFirstChild(PartName)
-    if not Part then return nil, nil end
-
-    getgenv().Looten.Silent.Prediction.Prediction = tonumber(Shared.SilentPrediction) or getgenv().Looten.Silent.Prediction.Prediction or 0.135
-
-    local TargetCF = Part.CFrame
-    local TargetVel = Char.HumanoidRootPart.Velocity
-    local TargetMov = Char.Humanoid.MoveDirection
-    local SilentPos = TargetCF.Position
-
-    local HighVel = false
-    if getgenv().DD then
-        local mag = TargetVel.magnitude
-        if mag > getgenv().DV then HighVel = true
-        elseif mag < 1 and TargetMov.magnitude > 0.01 then HighVel = true
-        elseif mag > 5 and TargetMov.magnitude < 0.01 then HighVel = true
-        end
-    end
-
-    if getgenv().Looten.Adjustment.Checks.NoGroundShots and TargetVel.Y < getgenv().WAGA then
-        SilentPos = TargetCF.Position + (Vector3.new(TargetVel.X, (TargetVel.Y * getgenv().AGV), TargetVel.Z) * getgenv().Looten.Silent.Prediction.Prediction)
-    elseif getgenv().DUG and TargetVel.Y < getgenv().UD then
-        SilentPos = TargetCF.Position + (Vector3.new(TargetVel.X, 0, TargetVel.Z) * getgenv().Looten.Silent.Prediction.Prediction)
-    elseif HighVel then
-        SilentPos = TargetCF.Position + (TargetMov * getgenv().Looten.Silent.Prediction.Prediction * 16)
-    elseif getgenv().Looten.Silent.Prediction.Enabled then
-        SilentPos = TargetCF.Position + (Vector3.new(TargetVel.X, TargetVel.Y, TargetVel.Z) * getgenv().Looten.Silent.Prediction.Prediction)
-    end
-
-    return SilentPos, Part
+local function IsTargetValid()
+    if not TargetPlr then return false end
+    if not TargetPlr.Character then return false end
+    local hum = TargetPlr.Character:FindFirstChild("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if not TargetPlr.Character:FindFirstChild("HumanoidRootPart") then return false end
+    return true
 end
 
-local function unlock()
-    isLocked = false
-    targetPlr = nil
-    targetPart = nil
-    label.Text = "Waiting for Target.. (press Q)"
-    label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    marker.Visible = false
+local function GetPredictedPosition()
+    if not (IsLocked and IsTargetValid()) then return nil end
+
+    local root = TargetPlr.Character:FindFirstChild("HumanoidRootPart")
+    local part = TargetPlr.Character:FindFirstChild(getgenv().HitPart)
+    if not root or not part then return nil end
+
+    local smoothVel = GetSmoothedVelocity(TargetPlr)
+    local ping = 0.08
+    local stats = LP:FindFirstChild("NetworkPing")
+    if stats then ping = stats.Value or 0.08 end
+    local totalPrediction = getgenv().Prediction + ping
+
+    return part.Position + (smoothVel * totalPrediction)
 end
 
-local function toggleLock()
-    local potentialNewTarget = GetTargetForQLock()
+table.insert(Connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if keyBox:IsFocused() then return end
+    if input.KeyCode ~= AimKey then return end
 
-    if isLocked then
-        if potentialNewTarget and potentialNewTarget ~= targetPlr then
-            targetPlr = potentialNewTarget
-            targetPart = potentialNewTarget.Character.HumanoidRootPart
-            label.Text = "LOCKED: " .. potentialNewTarget.DisplayName
-            label.TextColor3 = Color3.fromRGB(255, 50, 50)
-        else
-            unlock()
-        end
+    if IsLocked then
+        IsLocked = false
+        TargetPlr = nil
+        label.Text = "Silent Aim | Unlocked"
+        label.TextColor3 = Color3.fromRGB(200, 200, 200)
+        marker.Visible = false
     else
-        if potentialNewTarget then
-            isLocked = true
-            targetPlr = potentialNewTarget
-            targetPart = potentialNewTarget.Character.HumanoidRootPart
-            label.Text = "LOCKED: " .. potentialNewTarget.DisplayName
-            label.TextColor3 = Color3.fromRGB(255, 50, 50)
-        else
-            unlock()
+        TargetPlr = GetClosestTarget()
+        if TargetPlr then
+            IsLocked = true
+            label.Text = "LOCKED → " .. TargetPlr.DisplayName
+            label.TextColor3 = Color3.fromRGB(0, 255, 80)
         end
     end
-end
+end))
+
+table.insert(Connections, RunService.Heartbeat:Connect(function()
+    if IsLocked then
+        if not IsTargetValid() then
+            task.wait(0.3)
+            if not IsTargetValid() then
+                local newTarget = GetClosestTarget()
+                if newTarget then
+                    TargetPlr = newTarget
+                    label.Text = "LOCKED → " .. TargetPlr.DisplayName
+                    label.TextColor3 = Color3.fromRGB(0, 255, 80)
+                else
+                    IsLocked = false
+                    TargetPlr = nil
+                    label.Text = "Target lost | Press key again"
+                    label.TextColor3 = Color3.fromRGB(255, 100, 100)
+                    marker.Visible = false
+                end
+            end
+        end
+    end
+end))
 
 table.insert(Connections, RunService.RenderStepped:Connect(function()
-    IsGunEquipped = CheckGun()
-    if not IsGunEquipped then
-        predictionPos = nil
-        marker.Visible = false
-        return 
-    end
-
-    if isLocked and targetPlr and IsPlayerValid(targetPlr) then
-        local pPos, pPart = CalculatePrediction(targetPlr)
-        if pPos then
-            predictionPos = pPos
-            targetPart = pPart
-            local sPos, onScreen = Camera:WorldToViewportPoint(predictionPos)
+    if IsLocked and IsTargetValid() then
+        local predPos = GetPredictedPosition()
+        if predPos then
+            local screenPos, onScreen = Camera:WorldToViewportPoint(predPos)
+            marker.Visible = onScreen
             if onScreen then
-                marker.Visible = true
-                marker.Position = UDim2.new(0, sPos.X, 0, sPos.Y)
-            else
-                marker.Visible = false
+                marker.Position = UDim2.fromOffset(screenPos.X - 6.5, screenPos.Y - 6.5)
             end
-        else
-            unlock()
         end
     else
-        if isLocked then unlock() end
+        marker.Visible = false
     end
 end))
 
-table.insert(Connections, UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then return end
-    if input.KeyCode == Enum.KeyCode.Q then
-        toggleLock()
-    end
-end))
-
-local mt = getrawmetatable(game)
-local oldNc = mt.__namecall
-setreadonly(mt, false)
-
-mt.__namecall = newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    local args = {...}
-
-    if method == "FireServer" and isLocked and predictionPos and IsGunEquipped then
-        if args[1] == "MOUSE" then
-            args[2] = predictionPos
-            return oldNc(self, unpack(args))
+local oldIndex
+oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, key)
+    if not checkcaller() and IsLocked and self == Mouse then
+        local predicted = GetPredictedPosition()
+        if predicted then
+            if key == "Hit" then
+                return CFrame.new(predicted)
+            elseif key == "Target" then
+                if IsTargetValid() then
+                    return TargetPlr.Character:FindFirstChild(getgenv().HitPart)
+                end
+            end
         end
     end
-
-    return oldNc(self, ...)
-end)
-
-setreadonly(mt, true)
+    return oldIndex(self, key)
+end))
 
 getgenv().SilentAim_Q_Destroy = function()
-    pcall(unlock)
+    for _, c in pairs(Connections) do
+        pcall(function() c:Disconnect() end)
+    end
     if gui then gui:Destroy() end
-    for _, c in pairs(Connections) do pcall(function() c:Disconnect() end) end
-    Connections = {}
-    
-    local mt2 = getrawmetatable(game)
-    setreadonly(mt2, false)
-    mt2.__namecall = oldNc
-    setreadonly(mt2, true)
-    
     getgenv().SilentAim_Q_Destroy = nil
 end
