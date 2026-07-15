@@ -3,6 +3,7 @@ if getgenv().SilentAim_Q_Destroy then pcall(getgenv().SilentAim_Q_Destroy) end
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local Stats = game:GetService("Stats")
 
 local LP = Players.LocalPlayer
 local Mouse = LP:GetMouse()
@@ -15,11 +16,150 @@ getgenv().LockTolerance = 160
 local TargetPlr = nil
 local IsLocked = false
 local Connections = {}
-local LastPositions = {}
-local LastTime = {}
 local AimKey = Enum.KeyCode.Q
-local WaitingForKey = false
 
+-- VERBESSERTES VELOCITY-SYSTEM MIT HISTORY-BUFFER
+local VelocityHistory = {} -- { [userId] = { positions = {}, times = {} } }
+local HISTORY_SIZE = 6    -- Anzahl der gespeicherten Frames für EMA
+
+-- Liest den echten Ping aus dem Stats-Service
+local function GetRealPing()
+    local ok, ping = pcall(function()
+        return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    if ok and ping and ping > 0 then
+        return ping / 1000 -- ms → Sekunden
+    end
+    return 0.08 -- Fallback
+end
+
+-- Exponential Moving Average über die letzten N Positionen
+-- Verhindert, dass ein einzelner "Ausreißer-Frame" die Prediction zerstört
+local function GetSmoothedVelocity(player)
+    local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return Vector3.zero end
+
+    local pid = player.UserId
+    local now = tick()
+    local pos = root.Position
+
+    -- History initialisieren
+    if not VelocityHistory[pid] then
+        VelocityHistory[pid] = { positions = {}, times = {} }
+    end
+
+    local hist = VelocityHistory[pid]
+    table.insert(hist.positions, pos)
+    table.insert(hist.times, now)
+
+    -- Buffer begrenzen
+    while #hist.positions > HISTORY_SIZE do
+        table.remove(hist.positions, 1)
+        table.remove(hist.times, 1)
+    end
+
+    -- Brauchen mindestens 2 Einträge für eine Velocity
+    if #hist.positions < 2 then
+        return Vector3.zero
+    end
+
+    -- Rohe Velocity aus ältestem → neuestem Eintrag (stabilster Wert)
+    local oldestPos = hist.positions[1]
+    local oldestTime = hist.times[1]
+    local dt = now - oldestTime
+
+    if dt < 0.001 then return Vector3.zero end
+
+    local rawVelocity = (pos - oldestPos) / dt
+
+    -- Plausibilitätsprüfung: Roblox-Spieler bewegen sich max ~100 studs/s
+    -- Alles darüber ist ein Netzwerk-Ausreißer → ignorieren
+    local speed = rawVelocity.Magnitude
+    if speed > 120 then
+        -- Fallback: Nur letzten Frame nutzen
+        local prevPos = hist.positions[#hist.positions - 1]
+        local prevTime = hist.times[#hist.times - 1]
+        local shortDt = now - prevTime
+        if shortDt > 0.001 then
+            local shortVel = (pos - prevPos) / shortDt
+            if shortVel.Magnitude <= 120 then
+                return shortVel
+            end
+        end
+        return Vector3.zero -- Ausreißer komplett verwerfen
+    end
+
+    return rawVelocity
+end
+
+-- Räumt Velocity-History für Spieler auf, die nicht mehr im Spiel sind
+local function CleanupHistory()
+    for pid, _ in pairs(VelocityHistory) do
+        local found = false
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.UserId == pid then found = true break end
+        end
+        if not found then VelocityHistory[pid] = nil end
+    end
+end
+task.spawn(function()
+    while true do task.wait(10) CleanupHistory() end
+end)
+
+local function GetClosestTarget()
+    local mousePos = UserInputService:GetMouseLocation()
+    local shortest = getgenv().LockTolerance
+    local target = nil
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LP and player.Character then
+            local hum = player.Character:FindFirstChild("Humanoid")
+            local hitPart = player.Character:FindFirstChild(getgenv().HitPart)
+            if hum and hum.Health > 0 and hitPart then
+                local screenPos, visible = Camera:WorldToViewportPoint(hitPart.Position)
+                if visible then
+                    local dist = (mousePos - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
+                    if dist < shortest then
+                        shortest = dist
+                        target = player
+                    end
+                end
+            end
+        end
+    end
+    return target
+end
+
+local function IsTargetValid()
+    if not TargetPlr or not TargetPlr.Character then return false end
+    local hum = TargetPlr.Character:FindFirstChild("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if not TargetPlr.Character:FindFirstChild("HumanoidRootPart") then return false end
+    return true
+end
+
+local function GetPredictedPosition()
+    if not (IsLocked and IsTargetValid()) then return nil end
+
+    local part = TargetPlr.Character:FindFirstChild(getgenv().HitPart)
+    if not part then return nil end
+
+    -- Velocity aus dem stabilen History-Buffer
+    local smoothVel = GetSmoothedVelocity(TargetPlr)
+
+    -- Echter Ping aus dem Stats-Service
+    local ping = GetRealPing()
+
+    -- Gesamt-Prediction: Nutzer-Wert + halber Ping (round-trip → one-way)
+    local totalPrediction = getgenv().Prediction + (ping * 0.5)
+
+    -- Kap bei max 0.4s um wilde Schüsse bei Ping-Spikes zu verhindern
+    totalPrediction = math.clamp(totalPrediction, 0.05, 0.4)
+
+    return part.Position + (smoothVel * totalPrediction)
+end
+
+-- GUI
 local gui = Instance.new("ScreenGui", game:GetService("CoreGui"))
 gui.Name = "SilentAim_Stealth"
 
@@ -67,106 +207,25 @@ local mStroke = Instance.new("UIStroke", marker)
 mStroke.Color = Color3.fromRGB(255, 255, 255)
 mStroke.Thickness = 2
 
-keyBox.FocusLost:Connect(function(enterPressed)
+keyBox.FocusLost:Connect(function()
     local input = keyBox.Text:upper():gsub("%s", "")
-    if input == "" then
-        keyBox.Text = AimKey.Name
-        return
-    end
-
-    local success, key = pcall(function()
-        return Enum.KeyCode[input]
-    end)
-
-    if success and key then
+    if input == "" then keyBox.Text = AimKey.Name return end
+    local ok, key = pcall(function() return Enum.KeyCode[input] end)
+    if ok and key then
         AimKey = key
         keyBox.Text = key.Name
         keyStroke.Color = Color3.fromRGB(0, 255, 80)
-        task.delay(0.5, function()
-            keyStroke.Color = Color3.fromRGB(80, 80, 80)
-        end)
+        task.delay(0.5, function() keyStroke.Color = Color3.fromRGB(80, 80, 80) end)
     else
         keyBox.Text = AimKey.Name
         keyStroke.Color = Color3.fromRGB(255, 50, 50)
-        task.delay(0.5, function()
-            keyStroke.Color = Color3.fromRGB(80, 80, 80)
-        end)
+        task.delay(0.5, function() keyStroke.Color = Color3.fromRGB(80, 80, 80) end)
     end
 end)
 
-local function GetSmoothedVelocity(player)
-    local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-    if not root then return Vector3.zero end
-
-    local now = tick()
-    local pid = player.UserId
-
-    if LastPositions[pid] and LastTime[pid] then
-        local dt = now - LastTime[pid]
-        if dt > 0 then
-            local vel = (root.Position - LastPositions[pid]) / dt
-            LastPositions[pid] = root.Position
-            LastTime[pid] = now
-            return vel
-        end
-    end
-
-    LastPositions[pid] = root.Position
-    LastTime[pid] = now
-    return root.Velocity
-end
-
-local function GetClosestTarget()
-    local mousePos = UserInputService:GetMouseLocation()
-    local shortest = getgenv().LockTolerance
-    local target = nil
-
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LP and player.Character and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
-            local hitPart = player.Character:FindFirstChild(getgenv().HitPart)
-            if hitPart then
-                local screenPos, visible = Camera:WorldToViewportPoint(hitPart.Position)
-                if visible then
-                    local distance = (mousePos - Vector2.new(screenPos.X, screenPos.Y)).Magnitude
-                    if distance < shortest then
-                        shortest = distance
-                        target = player
-                    end
-                end
-            end
-        end
-    end
-    return target
-end
-
-local function IsTargetValid()
-    if not TargetPlr then return false end
-    if not TargetPlr.Character then return false end
-    local hum = TargetPlr.Character:FindFirstChild("Humanoid")
-    if not hum or hum.Health <= 0 then return false end
-    if not TargetPlr.Character:FindFirstChild("HumanoidRootPart") then return false end
-    return true
-end
-
-local function GetPredictedPosition()
-    if not (IsLocked and IsTargetValid()) then return nil end
-
-    local root = TargetPlr.Character:FindFirstChild("HumanoidRootPart")
-    local part = TargetPlr.Character:FindFirstChild(getgenv().HitPart)
-    if not root or not part then return nil end
-
-    local smoothVel = GetSmoothedVelocity(TargetPlr)
-    local ping = 0.08
-    local stats = LP:FindFirstChild("NetworkPing")
-    if stats then ping = stats.Value or 0.08 end
-    local totalPrediction = getgenv().Prediction + ping
-
-    return part.Position + (smoothVel * totalPrediction)
-end
-
-table.insert(Connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    if keyBox:IsFocused() then return end
+-- Lock / Unlock
+table.insert(Connections, UserInputService.InputBegan:Connect(function(input, gp)
+    if gp or keyBox:IsFocused() then return end
     if input.KeyCode ~= AimKey then return end
 
     if IsLocked then
@@ -185,28 +244,40 @@ table.insert(Connections, UserInputService.InputBegan:Connect(function(input, ga
     end
 end))
 
-table.insert(Connections, RunService.Heartbeat:Connect(function()
-    if IsLocked then
-        if not IsTargetValid() then
-            task.wait(0.3)
-            if not IsTargetValid() then
-                local newTarget = GetClosestTarget()
-                if newTarget then
-                    TargetPlr = newTarget
-                    label.Text = "LOCKED → " .. TargetPlr.DisplayName
-                    label.TextColor3 = Color3.fromRGB(0, 255, 80)
-                else
-                    IsLocked = false
-                    TargetPlr = nil
-                    label.Text = "Target lost | Press key again"
-                    label.TextColor3 = Color3.fromRGB(255, 100, 100)
-                    marker.Visible = false
-                end
-            end
+-- HEARTBEAT: Kein task.wait() mehr! Saubere Zustandsmaschine
+local targetLostTimer = 0
+table.insert(Connections, RunService.Heartbeat:Connect(function(dt)
+    if not IsLocked then
+        targetLostTimer = 0
+        return
+    end
+
+    if IsTargetValid() then
+        targetLostTimer = 0
+        return
+    end
+
+    -- Ziel ungültig: Timer hochzählen statt task.wait
+    targetLostTimer = targetLostTimer + dt
+
+    if targetLostTimer >= 0.3 then
+        targetLostTimer = 0
+        local newTarget = GetClosestTarget()
+        if newTarget then
+            TargetPlr = newTarget
+            label.Text = "LOCKED → " .. TargetPlr.DisplayName
+            label.TextColor3 = Color3.fromRGB(0, 255, 80)
+        else
+            IsLocked = false
+            TargetPlr = nil
+            label.Text = "Target lost | Press key again"
+            label.TextColor3 = Color3.fromRGB(255, 100, 100)
+            marker.Visible = false
         end
     end
 end))
 
+-- RENDERSTEP: Marker-Update
 table.insert(Connections, RunService.RenderStepped:Connect(function()
     if IsLocked and IsTargetValid() then
         local predPos = GetPredictedPosition()
@@ -222,17 +293,18 @@ table.insert(Connections, RunService.RenderStepped:Connect(function()
     end
 end))
 
+-- METAMETHOD HOOK: Schießt immer auf die vorhergesagte Position
 local oldIndex
 oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, key)
     if not checkcaller() and IsLocked and self == Mouse then
-        local predicted = GetPredictedPosition()
-        if predicted then
-            if key == "Hit" then
+        if key == "Hit" then
+            local predicted = GetPredictedPosition()
+            if predicted then
                 return CFrame.new(predicted)
-            elseif key == "Target" then
-                if IsTargetValid() then
-                    return TargetPlr.Character:FindFirstChild(getgenv().HitPart)
-                end
+            end
+        elseif key == "Target" then
+            if IsTargetValid() then
+                return TargetPlr.Character:FindFirstChild(getgenv().HitPart)
             end
         end
     end
@@ -240,9 +312,8 @@ oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, key)
 end))
 
 getgenv().SilentAim_Q_Destroy = function()
-    for _, c in pairs(Connections) do
-        pcall(function() c:Disconnect() end)
-    end
+    for _, c in pairs(Connections) do pcall(function() c:Disconnect() end) end
     if gui then gui:Destroy() end
+    VelocityHistory = {}
     getgenv().SilentAim_Q_Destroy = nil
 end
